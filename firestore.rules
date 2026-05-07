@@ -1,0 +1,91 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/users/$(request.auth.uid)).data.isAdmin == true) ||
+        request.auth.token.email == "hridykhan740@gmail.com"
+      );
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Users ---
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if isOwner(userId) && 
+                      incoming().keys().hasAll(['uid', 'email']) &&
+                      incoming().isAdmin == false; // Users can't make themselves admin
+      allow update: if isOwner(userId) && 
+                      incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL']) ||
+                      isAdmin();
+    }
+
+    // --- Products ---
+    match /products/{productId} {
+      allow read: if true; // Publicly viewable
+      allow write: if isAdmin();
+      
+      function isValidProduct(data) {
+        return data.name is string && data.name.size() < 200 &&
+               data.price is number && data.price >= 0 &&
+               data.stock is number && data.stock >= 0;
+      }
+      
+      allow create: if isAdmin() && isValidProduct(incoming());
+      allow update: if isAdmin() && isValidProduct(incoming());
+    }
+
+    // --- Orders ---
+    match /orders/{orderId} {
+      allow get: if isSignedIn() && (isOwner(existing().userId) || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isAdmin());
+      
+      function isValidOrder(data) {
+        return data.userId == request.auth.uid &&
+               data.items is list && data.items.size() > 0 &&
+               data.total is number && data.total >= 0;
+      }
+      
+      allow create: if isSignedIn() && isValidOrder(incoming());
+      allow update: if isAdmin(); // Only admin can update order status
+    }
+
+    // --- Reviews ---
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if isSignedIn() && 
+                      incoming().userId == request.auth.uid &&
+                      incoming().productId is string &&
+                      incoming().rating is number &&
+                      incoming().rating >= 1 && incoming().rating <= 5;
+      allow update, delete: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+    }
+  }
+}
